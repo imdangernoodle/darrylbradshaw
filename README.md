@@ -125,5 +125,3 @@ glassssh://pair?host=10.0.0.5&port=22&service=studio-mac&fp=SHA256:...&token=<on
 QR codes carry **no secrets** — only connection metadata and the host-key
 fingerprint to pin. Passwords and private keys stay on the device. The complete
 field reference is in [docs/URL-SCHEME.md](docs/URL-SCHEME.md).
-</content>
-</invoke>
