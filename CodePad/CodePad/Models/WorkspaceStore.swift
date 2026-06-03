@@ -1,0 +1,217 @@
+import SwiftUI
+import Combine
+
+/// Owns workspace state: open tabs, the active document, the file tree,
+/// and UI flags. A single shared instance is used so that menu commands
+/// (driven by the hardware keyboard) and the view hierarchy stay in sync.
+@MainActor
+final class WorkspaceStore: ObservableObject {
+    static let shared = WorkspaceStore()
+
+    @Published var openDocuments: [EditorDocument] = []
+    @Published var activeDocumentID: UUID?
+    @Published var workspaceURL: URL?
+    @Published var fileTree: [FileNode] = []
+
+    @Published var sidebarVisible: Bool = true
+    @Published var theme: EditorTheme = .dark
+    @Published var showCommandPalette: Bool = false
+
+    // File-importer triggers, bound to .fileImporter modifiers in ContentView.
+    @Published var importFile: Bool = false
+    @Published var importFolder: Bool = false
+
+    private let bookmarkKey = "workspaceBookmark"
+
+    var activeDocument: EditorDocument? {
+        openDocuments.first { $0.id == activeDocumentID }
+    }
+
+    private var documentsURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+    }
+
+    init() {
+        restoreWorkspace()
+    }
+
+    // MARK: - Theme
+
+    func toggleTheme() {
+        theme = (theme == .dark) ? .light : .dark
+    }
+
+    // MARK: - Opening documents
+
+    func open(_ url: URL) {
+        // Already open? Just activate it.
+        if let existing = openDocuments.first(where: { $0.url == url }) {
+            activeDocumentID = existing.id
+            return
+        }
+        // Best-effort: files inside an open workspace are covered by the
+        // folder's security scope; standalone files are scoped in handleOpenFiles.
+        _ = url.startAccessingSecurityScopedResource()
+
+        let text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        let doc = EditorDocument(
+            name: url.lastPathComponent,
+            text: text,
+            url: url,
+            language: .detect(from: url)
+        )
+        openDocuments.append(doc)
+        activeDocumentID = doc.id
+    }
+
+    func handleOpenFiles(_ result: Result<[URL], Error>) {
+        guard case .success(let urls) = result else { return }
+        for url in urls {
+            _ = url.startAccessingSecurityScopedResource()
+            open(url)
+        }
+    }
+
+    func handleOpenFolder(_ result: Result<URL, Error>) {
+        guard case .success(let url) = result else { return }
+        guard url.startAccessingSecurityScopedResource() else { return }
+        setWorkspace(url)
+        saveBookmark(for: url)
+    }
+
+    // MARK: - Tabs
+
+    func activate(_ doc: EditorDocument) {
+        activeDocumentID = doc.id
+    }
+
+    func close(_ doc: EditorDocument) {
+        guard let idx = openDocuments.firstIndex(where: { $0.id == doc.id }) else { return }
+        openDocuments.remove(at: idx)
+        if activeDocumentID == doc.id {
+            let next = min(idx, openDocuments.count - 1)
+            activeDocumentID = openDocuments.indices.contains(next) ? openDocuments[next].id : nil
+        }
+    }
+
+    func closeActive() {
+        if let doc = activeDocument { close(doc) }
+    }
+
+    // MARK: - Saving
+
+    func saveActive() {
+        guard let doc = activeDocument, let url = doc.url else { return }
+        do {
+            try doc.text.write(to: url, atomically: true, encoding: .utf8)
+            doc.isDirty = false
+        } catch {
+            // Best-effort save; a production app would surface this to the user.
+            print("Save failed: \(error)")
+        }
+    }
+
+    // MARK: - New file
+
+    func createNewFile() {
+        let baseDir = workspaceURL ?? documentsURL
+        let url = uniqueURL(in: baseDir, base: "untitled", ext: "txt")
+        try? "".write(to: url, atomically: true, encoding: .utf8)
+        let doc = EditorDocument(name: url.lastPathComponent, text: "", url: url, language: .plaintext)
+        openDocuments.append(doc)
+        activeDocumentID = doc.id
+        refreshTree()
+    }
+
+    private func uniqueURL(in dir: URL, base: String, ext: String) -> URL {
+        var n = 1
+        var candidate = dir.appendingPathComponent("\(base)-\(n).\(ext)")
+        while FileManager.default.fileExists(atPath: candidate.path) {
+            n += 1
+            candidate = dir.appendingPathComponent("\(base)-\(n).\(ext)")
+        }
+        return candidate
+    }
+
+    // MARK: - File tree
+
+    private func setWorkspace(_ url: URL) {
+        workspaceURL = url
+        refreshTree()
+    }
+
+    func refreshTree() {
+        guard let root = workspaceURL else { fileTree = []; return }
+        fileTree = buildTree(at: root)
+    }
+
+    private func buildTree(at url: URL) -> [FileNode] {
+        let keys: [URLResourceKey] = [.isDirectoryKey, .nameKey]
+        guard let contents = try? FileManager.default.contentsOfDirectory(
+            at: url,
+            includingPropertiesForKeys: keys,
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+
+        let nodes: [FileNode] = contents.compactMap { child in
+            let isDir = (try? child.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+            return FileNode(
+                url: child,
+                name: child.lastPathComponent,
+                isDirectory: isDir,
+                children: isDir ? buildTree(at: child) : nil
+            )
+        }
+
+        // Directories first, then files, both alphabetical.
+        return nodes.sorted { a, b in
+            if a.isDirectory != b.isDirectory { return a.isDirectory && !b.isDirectory }
+            return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+        }
+    }
+
+    // MARK: - Security-scoped bookmark persistence
+
+    private func saveBookmark(for url: URL) {
+        if let data = try? url.bookmarkData(options: .minimalBookmark, includingResourceValuesForKeys: nil, relativeTo: nil) {
+            UserDefaults.standard.set(data, forKey: bookmarkKey)
+        }
+    }
+
+    private func restoreWorkspace() {
+        guard let data = UserDefaults.standard.data(forKey: bookmarkKey) else { return }
+        var stale = false
+        guard let url = try? URL(resolvingBookmarkData: data, options: [], relativeTo: nil, bookmarkDataIsStale: &stale),
+              url.startAccessingSecurityScopedResource() else { return }
+        setWorkspace(url)
+    }
+
+    // MARK: - Command palette commands
+
+    var paletteCommands: [PaletteCommand] {
+        var cmds: [PaletteCommand] = [
+            PaletteCommand(title: "New File", shortcut: "⌘N") { [weak self] in self?.createNewFile() },
+            PaletteCommand(title: "Open File…", shortcut: "⌘O") { [weak self] in self?.importFile = true },
+            PaletteCommand(title: "Open Folder…", shortcut: "⌘⇧O") { [weak self] in self?.importFolder = true },
+            PaletteCommand(title: "Save", shortcut: "⌘S") { [weak self] in self?.saveActive() },
+            PaletteCommand(title: "Close Tab", shortcut: "⌘W") { [weak self] in self?.closeActive() },
+            PaletteCommand(title: "Toggle Sidebar", shortcut: "⌘B") { [weak self] in self?.sidebarVisible.toggle() },
+            PaletteCommand(title: "Toggle Theme", shortcut: "⌘⇧K") { [weak self] in self?.toggleTheme() },
+        ]
+        if activeDocument != nil {
+            for lang in Language.allCases {
+                cmds.append(PaletteCommand(title: "Change Language: \(lang.displayName)", shortcut: nil) { [weak self] in
+                    self?.activeDocument?.language = lang
+                })
+            }
+        }
+        return cmds
+    }
+}
+
+struct PaletteCommand: Identifiable {
+    let id = UUID()
+    let title: String
+    let shortcut: String?
+    let action: () -> Void
+}
