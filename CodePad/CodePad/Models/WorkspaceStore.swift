@@ -25,6 +25,10 @@ final class WorkspaceStore: ObservableObject {
     /// Whether we currently hold an active security scope on `workspaceURL`.
     private var workspaceAccessing = false
 
+    /// Scopes of previously opened workspaces kept alive because documents from
+    /// them are still open. Released once their last document closes.
+    private var retainedWorkspaceScopes: Set<URL> = []
+
     private let bookmarkKey = "workspaceBookmark"
 
     var activeDocument: EditorDocument? {
@@ -112,6 +116,9 @@ final class WorkspaceStore: ObservableObject {
             url.stopAccessingSecurityScopedResource()
         }
         openDocuments.remove(at: idx)
+        // If this was the last open document under a retained old workspace,
+        // release that workspace's scope too.
+        releaseRetainedScopeIfUnused(for: doc.url)
         if activeDocumentID == doc.id {
             let next = min(idx, openDocuments.count - 1)
             activeDocumentID = openDocuments.indices.contains(next) ? openDocuments[next].id : nil
@@ -160,13 +167,38 @@ final class WorkspaceStore: ObservableObject {
     // MARK: - File tree
 
     private func setWorkspace(_ url: URL, accessing: Bool) {
-        // Release the previously opened workspace's security scope, if any.
+        // Handle the previous workspace's security scope, if any.
         if workspaceAccessing, let old = workspaceURL, old != url {
-            old.stopAccessingSecurityScopedResource()
+            if openDocuments.contains(where: { isURL($0.url, under: old) }) {
+                // Documents from the old workspace are still open and rely on
+                // its scope to save — keep it alive until they all close.
+                retainedWorkspaceScopes.insert(old)
+            } else {
+                old.stopAccessingSecurityScopedResource()
+            }
         }
         workspaceURL = url
         workspaceAccessing = accessing
         refreshTree()
+    }
+
+    /// True if `url` is `base` or lives inside it.
+    private func isURL(_ url: URL?, under base: URL) -> Bool {
+        guard let url else { return false }
+        let target = url.standardizedFileURL.path
+        let root = base.standardizedFileURL.path
+        return target == root || target.hasPrefix(root.hasSuffix("/") ? root : root + "/")
+    }
+
+    /// Releases any retained old-workspace scope that no open document needs.
+    private func releaseRetainedScopeIfUnused(for url: URL?) {
+        guard let url else { return }
+        for scope in retainedWorkspaceScopes where isURL(url, under: scope) {
+            if !openDocuments.contains(where: { isURL($0.url, under: scope) }) {
+                scope.stopAccessingSecurityScopedResource()
+                retainedWorkspaceScopes.remove(scope)
+            }
+        }
     }
 
     func refreshTree() {

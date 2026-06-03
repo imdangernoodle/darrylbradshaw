@@ -237,8 +237,14 @@ final class LineNumberTextView: UITextView {
         config.title = label
         config.cornerStyle = .medium
         config.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 10, bottom: 4, trailing: 10)
+        // UIButton.Configuration ignores titleLabel.font, so set the monospaced
+        // font through the configuration's title attributes transformer.
+        config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+            var outgoing = incoming
+            outgoing.font = .monospacedSystemFont(ofSize: 15, weight: .regular)
+            return outgoing
+        }
         let button = UIButton(configuration: config)
-        button.titleLabel?.font = .monospacedSystemFont(ofSize: 15, weight: .regular)
         button.addAction(UIAction { [weak self] _ in
             self?.insertText(insert)
         }, for: .touchUpInside)
