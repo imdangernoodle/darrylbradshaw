@@ -1,0 +1,34 @@
+name: Core CI
+
+on:
+  push:
+    branches:
+      - main
+      - "claude/**"
+  pull_request:
+
+jobs:
+  build-test-core:
+    name: Build & test GlassSSHCore (Linux)
+    runs-on: ubuntu-latest
+    container: swift:6.0-jammy
+    defaults:
+      run:
+        working-directory: Core
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve dependencies
+        run: swift package resolve
+
+      # Pure logic first: its tests are the real verification gate and must not be
+      # masked by any SwiftNIO-SSH API drift in the networking layer.
+      - name: Build core (pure logic)
+        run: swift build --target GlassSSHCore
+
+      - name: Test core
+        run: swift test --parallel
+
+      # Networking layer: compiled here, exercised against real servers on-device.
+      - name: Build networking layer
+        run: swift build --target GlassSSHNet
