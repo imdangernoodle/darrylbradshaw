@@ -29,6 +29,9 @@ jobs:
           apt-get install -y --no-install-recommends openssh-server
 
       - name: Configure and start sshd
+        # Force bash: the readiness probe below uses the bash-only /dev/tcp
+        # pseudo-device, which is unavailable under dash (the default `sh`).
+        shell: bash
         run: |
           set -eux
 
