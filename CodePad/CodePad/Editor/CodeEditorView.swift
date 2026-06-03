@@ -27,7 +27,12 @@ struct CodeEditorView: UIViewRepresentable {
         if tv.text != document.text {
             let sel = tv.selectedRange
             tv.text = document.text
-            tv.selectedRange = sel.location <= (tv.text as NSString).length ? sel : NSRange(location: (tv.text as NSString).length, length: 0)
+            // Validate the *whole* range against the new length; a selection
+            // whose end ran past the shrunken text would crash UITextView.
+            let newLength = (tv.text as NSString).length
+            tv.selectedRange = (sel.location + sel.length <= newLength)
+                ? sel
+                : NSRange(location: min(sel.location, newLength), length: 0)
             needsHighlight = true
         }
         if context.coordinator.lastLanguage != document.language || context.coordinator.lastTheme != theme {
@@ -84,8 +89,10 @@ final class LineNumberTextView: UITextView {
     var gutterTextColor: UIColor = UIColor(hex: 0x858585)
     var gutterBackgroundColor: UIColor = UIColor(hex: 0x1E1E1E)
     private var gutterFont: UIFont = .monospacedSystemFont(ofSize: 12, weight: .regular)
+    private var currentTheme: EditorTheme = .dark
 
     func applyTheme(_ theme: EditorTheme) {
+        currentTheme = theme
         backgroundColor = theme.background
         textColor = theme.foreground
         font = theme.font
@@ -93,6 +100,7 @@ final class LineNumberTextView: UITextView {
         gutterTextColor = theme.gutterText
         gutterBackgroundColor = theme.gutterBackground
         keyboardAppearance = (theme == .dark) ? .dark : .light
+        styleShortcutBar(for: theme)
         configureBehaviour()
     }
 
@@ -170,6 +178,11 @@ final class LineNumberTextView: UITextView {
     private lazy var shortcutBar: UIView = makeShortcutBar()
     override var inputAccessoryView: UIView? { shortcutBar }
 
+    // References kept so the bar can be re-coloured when the theme changes.
+    private weak var shortcutScrollView: UIScrollView?
+    private var shortcutButtons: [UIButton] = []
+    private weak var dismissButton: UIButton?
+
     private let shortcuts: [(label: String, insert: String)] = [
         ("Tab", "    "), ("{", "{"), ("}", "}"), ("[", "["), ("]", "]"),
         ("(", "("), (")", ")"), ("<", "<"), (">", ">"), ("\"", "\""),
@@ -182,9 +195,9 @@ final class LineNumberTextView: UITextView {
     private func makeShortcutBar() -> UIView {
         let bar = UIScrollView(frame: CGRect(x: 0, y: 0, width: UIScreen.main.bounds.width, height: 44))
         bar.autoresizingMask = [.flexibleWidth]
-        bar.backgroundColor = UIColor(hex: 0x2D2D2D)
         bar.showsHorizontalScrollIndicator = false
         bar.alwaysBounceHorizontal = true
+        shortcutScrollView = bar
 
         let stack = UIStackView()
         stack.axis = .horizontal
@@ -209,20 +222,19 @@ final class LineNumberTextView: UITextView {
         // Dismiss-keyboard key on the far right.
         let dismiss = UIButton(type: .system)
         dismiss.setImage(UIImage(systemName: "keyboard.chevron.compact.down"), for: .normal)
-        dismiss.tintColor = .white
         dismiss.addAction(UIAction { [weak self] _ in self?.resignFirstResponder() }, for: .touchUpInside)
         dismiss.widthAnchor.constraint(equalToConstant: 44).isActive = true
         dismiss.heightAnchor.constraint(equalToConstant: 32).isActive = true
         stack.addArrangedSubview(dismiss)
+        dismissButton = dismiss
 
+        styleShortcutBar(for: currentTheme)
         return bar
     }
 
     private func makeKey(label: String, insert: String) -> UIButton {
         var config = UIButton.Configuration.gray()
         config.title = label
-        config.baseForegroundColor = .white
-        config.background.backgroundColor = UIColor(hex: 0x3A3A3A)
         config.cornerStyle = .medium
         config.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 10, bottom: 4, trailing: 10)
         let button = UIButton(configuration: config)
@@ -232,7 +244,22 @@ final class LineNumberTextView: UITextView {
         }, for: .touchUpInside)
         button.heightAnchor.constraint(equalToConstant: 32).isActive = true
         button.widthAnchor.constraint(greaterThanOrEqualToConstant: 34).isActive = true
+        shortcutButtons.append(button)
         return button
+    }
+
+    /// Recolours the shortcut bar to match the active editor theme.
+    private func styleShortcutBar(for theme: EditorTheme) {
+        guard let bar = shortcutScrollView else { return }
+        let dark = theme == .dark
+        bar.backgroundColor = dark ? UIColor(hex: 0x2D2D2D) : UIColor(hex: 0xD1D4DB)
+        let keyBackground = dark ? UIColor(hex: 0x3A3A3A) : UIColor.white
+        let keyForeground = dark ? UIColor.white : UIColor(hex: 0x1A1A1A)
+        for button in shortcutButtons {
+            button.configuration?.background.backgroundColor = keyBackground
+            button.configuration?.baseForegroundColor = keyForeground
+        }
+        dismissButton?.tintColor = keyForeground
     }
 }
 

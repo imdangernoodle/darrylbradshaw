@@ -20,6 +20,10 @@ final class WorkspaceStore: ObservableObject {
     // File-importer triggers, bound to .fileImporter modifiers in ContentView.
     @Published var importFile: Bool = false
     @Published var importFolder: Bool = false
+    @Published var errorMessage: String?
+
+    /// Whether we currently hold an active security scope on `workspaceURL`.
+    private var workspaceAccessing = false
 
     private let bookmarkKey = "workspaceBookmark"
 
@@ -49,33 +53,49 @@ final class WorkspaceStore: ObservableObject {
             activeDocumentID = existing.id
             return
         }
-        // Best-effort: files inside an open workspace are covered by the
-        // folder's security scope; standalone files are scoped in handleOpenFiles.
-        _ = url.startAccessingSecurityScopedResource()
+        // Start the security scope for this file. Files inside an open
+        // workspace are already covered by the folder's scope, so this returns
+        // false for them and only standalone files get a scope we must balance.
+        let didStartAccess = url.startAccessingSecurityScopedResource()
 
-        let text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        guard let text = readText(at: url) else {
+            // The file isn't decodable as text (e.g. binary). Refuse to open it
+            // rather than show empty content and clobber the file on the next save.
+            if didStartAccess { url.stopAccessingSecurityScopedResource() }
+            errorMessage = "Can't open “\(url.lastPathComponent)”: it doesn't appear to be a text file."
+            return
+        }
+
         let doc = EditorDocument(
             name: url.lastPathComponent,
             text: text,
             url: url,
             language: .detect(from: url)
         )
+        doc.isSecurityScoped = didStartAccess
         openDocuments.append(doc)
         activeDocumentID = doc.id
     }
 
     func handleOpenFiles(_ result: Result<[URL], Error>) {
         guard case .success(let urls) = result else { return }
-        for url in urls {
-            _ = url.startAccessingSecurityScopedResource()
-            open(url)
-        }
+        // `open(_:)` owns starting (and the matching stopping) of the scope.
+        urls.forEach(open)
+    }
+
+    /// Reads a file as text, trying UTF-8 and then encoding auto-detection.
+    /// Returns nil for content that can't be decoded (e.g. binary files).
+    private func readText(at url: URL) -> String? {
+        if let s = try? String(contentsOf: url, encoding: .utf8) { return s }
+        var used: String.Encoding = .utf8
+        if let s = try? String(contentsOf: url, usedEncoding: &used) { return s }
+        return nil
     }
 
     func handleOpenFolder(_ result: Result<URL, Error>) {
         guard case .success(let url) = result else { return }
         guard url.startAccessingSecurityScopedResource() else { return }
-        setWorkspace(url)
+        setWorkspace(url, accessing: true)
         saveBookmark(for: url)
     }
 
@@ -87,6 +107,10 @@ final class WorkspaceStore: ObservableObject {
 
     func close(_ doc: EditorDocument) {
         guard let idx = openDocuments.firstIndex(where: { $0.id == doc.id }) else { return }
+        // Balance the security scope started in open(_:).
+        if doc.isSecurityScoped, let url = doc.url {
+            url.stopAccessingSecurityScopedResource()
+        }
         openDocuments.remove(at: idx)
         if activeDocumentID == doc.id {
             let next = min(idx, openDocuments.count - 1)
@@ -135,8 +159,13 @@ final class WorkspaceStore: ObservableObject {
 
     // MARK: - File tree
 
-    private func setWorkspace(_ url: URL) {
+    private func setWorkspace(_ url: URL, accessing: Bool) {
+        // Release the previously opened workspace's security scope, if any.
+        if workspaceAccessing, let old = workspaceURL, old != url {
+            old.stopAccessingSecurityScopedResource()
+        }
         workspaceURL = url
+        workspaceAccessing = accessing
         refreshTree()
     }
 
@@ -183,7 +212,7 @@ final class WorkspaceStore: ObservableObject {
         var stale = false
         guard let url = try? URL(resolvingBookmarkData: data, options: [], relativeTo: nil, bookmarkDataIsStale: &stale),
               url.startAccessingSecurityScopedResource() else { return }
-        setWorkspace(url)
+        setWorkspace(url, accessing: true)
     }
 
     // MARK: - Command palette commands

@@ -50,5 +50,16 @@ struct ContentView: View {
         ) { result in
             store.handleOpenFolder(result.map { $0.first ?? URL(fileURLWithPath: "/") })
         }
+        .alert(
+            "Unable to Open File",
+            isPresented: Binding(
+                get: { store.errorMessage != nil },
+                set: { if !$0 { store.errorMessage = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(store.errorMessage ?? "")
+        }
     }
 }

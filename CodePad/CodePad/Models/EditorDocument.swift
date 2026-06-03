@@ -9,6 +9,10 @@ final class EditorDocument: ObservableObject, Identifiable {
     @Published var language: Language
     @Published var isDirty: Bool = false
 
+    /// True when `url` is a security-scoped resource we started accessing and
+    /// must `stopAccessingSecurityScopedResource()` on when this tab closes.
+    var isSecurityScoped: Bool = false
+
     init(name: String, text: String, url: URL?, language: Language) {
         self.name = name
         self.text = text
