@@ -84,6 +84,14 @@ final class ScannerViewController: UIViewController {
         requestAccessAndConfigure()
     }
 
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        // Resume the (already-configured) session when the controller becomes
+        // visible again — SwiftUI reuses this VC, so without this the preview
+        // stays frozen after the view is covered and reappears.
+        startRunning()
+    }
+
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         stopRunning()
