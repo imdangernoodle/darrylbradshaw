@@ -19,6 +19,10 @@ import GlassSSHCore
 final class BonjourDiscovery: ObservableObject, HostDiscovering {
     @Published private(set) var discovered: [DiscoveredHost] = []
 
+    /// Whether discovery is intentionally active. Guards the delayed restart in
+    /// `handleBrowserFailure` against a `stop()` that lands during the backoff.
+    private var isRunning = false
+
     /// One browser per service type, keyed by the kind it discovers.
     private var browsers: [DiscoveredHost.Kind: NWBrowser] = [:]
 
@@ -41,12 +45,14 @@ final class BonjourDiscovery: ObservableObject, HostDiscovering {
 
     func start() {
         guard browsers.isEmpty else { return }
+        isRunning = true
         for service in Self.services {
             startBrowser(kind: service.kind, type: service.type)
         }
     }
 
     func stop() {
+        isRunning = false
         for browser in browsers.values {
             browser.cancel()
         }
@@ -96,7 +102,9 @@ final class BonjourDiscovery: ObservableObject, HostDiscovering {
 
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64((self?.restartDelay ?? 2) * 1_000_000_000))
-            guard let self, self.browsers[kind] == nil else { return }
+            // Bail if discovery was stopped (or the browser already restarted)
+            // while we were sleeping.
+            guard let self, self.isRunning, self.browsers[kind] == nil else { return }
             self.startBrowser(kind: kind, type: type)
         }
     }

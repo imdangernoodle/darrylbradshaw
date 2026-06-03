@@ -58,6 +58,14 @@ public final class TerminalSession: ObservableObject {
 
     deinit {
         pumpTask?.cancel()
+        // The pump task holds the only other reference once we're gone; explicitly
+        // tear down the connection so a deallocation mid-session doesn't leak the
+        // SSHClient's socket and EventLoopGroup.
+        if let shell, let client {
+            Task { await shell.close(); await client.disconnect() }
+        } else if let client {
+            Task { await client.disconnect() }
+        }
     }
 
     // MARK: - Lifecycle
@@ -109,10 +117,18 @@ public final class TerminalSession: ObservableObject {
                 )
                 let shell = try await client.startShell(term: term, cols: cols, rows: rows)
 
-                await MainActor.run {
-                    guard let self else { return }
+                let attached = await MainActor.run { () -> Bool in
+                    guard let self else { return false }
                     self.shell = shell
                     self.state = .connected
+                    return true
+                }
+                // Session was deallocated between connect and here: tear the local
+                // shell/client down rather than leaking them.
+                guard attached else {
+                    await shell.close()
+                    await client.disconnect()
+                    return
                 }
 
                 for try await chunk in shell.output {
