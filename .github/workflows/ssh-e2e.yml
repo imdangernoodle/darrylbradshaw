@@ -1,0 +1,73 @@
+name: SSH E2E
+
+on:
+  push:
+    branches:
+      - main
+      - "claude/**"
+  pull_request:
+
+jobs:
+  ssh-e2e:
+    name: SSH end-to-end (real sshd, Linux)
+    runs-on: ubuntu-latest
+    container: swift:6.0-jammy
+    defaults:
+      run:
+        working-directory: Core
+    env:
+      GLASSSSH_E2E_HOST: 127.0.0.1
+      GLASSSSH_E2E_PORT: "22"
+      GLASSSSH_E2E_USER: glassssh
+      GLASSSSH_E2E_PASSWORD: glassssh-e2e-pass
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install openssh-server
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends openssh-server
+
+      - name: Configure and start sshd
+        run: |
+          set -eux
+
+          # Create the test user with a known password.
+          useradd --create-home --shell /bin/bash "$GLASSSSH_E2E_USER"
+          echo "${GLASSSSH_E2E_USER}:${GLASSSSH_E2E_PASSWORD}" | chpasswd
+
+          # sshd privilege-separation directory must exist.
+          mkdir -p /run/sshd
+
+          # Allow password auth and disable PAM (which can block logins inside a
+          # minimal container) so our test user can authenticate.
+          sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          sed -i 's/^#\?UsePAM.*/UsePAM no/' /etc/ssh/sshd_config
+          grep -q '^PasswordAuthentication yes' /etc/ssh/sshd_config || echo 'PasswordAuthentication yes' >> /etc/ssh/sshd_config
+          grep -q '^UsePAM no' /etc/ssh/sshd_config || echo 'UsePAM no' >> /etc/ssh/sshd_config
+
+          # Generate host keys.
+          ssh-keygen -A
+
+          # Start sshd in the background.
+          /usr/sbin/sshd
+
+          # Wait for the daemon to accept connections on port 22.
+          for i in $(seq 1 30); do
+            if (exec 3<>/dev/tcp/127.0.0.1/22) 2>/dev/null; then
+              exec 3>&- 3<&-
+              echo "sshd is up"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "sshd did not come up in time" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+
+      - name: Resolve dependencies
+        run: swift package resolve
+
+      - name: Run SSH end-to-end test
+        run: swift test --filter GlassSSHNetE2E

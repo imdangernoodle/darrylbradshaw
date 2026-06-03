@@ -38,5 +38,16 @@ let package = Package(
             name: "GlassSSHCoreTests",
             dependencies: ["GlassSSHCore"]
         ),
+        // End-to-end test of the networking layer against a real sshd. It is a
+        // no-op unless GLASSSSH_E2E_* env vars are set, so it stays inert in the
+        // normal Linux unit-test run and is driven by the ssh-e2e CI workflow.
+        .testTarget(
+            name: "GlassSSHNetE2ETests",
+            dependencies: [
+                "GlassSSHNet",
+                .product(name: "NIOSSH", package: "swift-nio-ssh"),
+                .product(name: "NIOPosix", package: "swift-nio"),
+            ]
+        ),
     ]
 )
