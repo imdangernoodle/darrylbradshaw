@@ -1,1 +1,757 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The Mathematical Sublime — Animated Algorithms</title>
+<style>
+  :root {
+    --bg: #06070d;
+    --panel: rgba(255,255,255,0.04);
+    --border: rgba(255,255,255,0.09);
+    --text: #e8eaf2;
+    --dim: #8a90a8;
+    --accent: #7c6cff;
+    --accent2: #43e6c5;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Avenir Next", "Segoe UI", system-ui, sans-serif;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+  body::before {
+    content: "";
+    position: fixed; inset: 0;
+    background:
+      radial-gradient(ellipse 60% 40% at 20% 0%, rgba(124,108,255,0.12), transparent),
+      radial-gradient(ellipse 50% 40% at 85% 100%, rgba(67,230,197,0.07), transparent);
+    pointer-events: none;
+  }
+  header { text-align: center; padding: 38px 20px 10px; position: relative; }
+  header h1 {
+    font-size: clamp(26px, 4vw, 44px);
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    background: linear-gradient(95deg, #fff 20%, var(--accent) 60%, var(--accent2));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  header p { color: var(--dim); margin-top: 8px; font-size: 15px; }
+  nav {
+    display: flex; flex-wrap: wrap; justify-content: center; gap: 8px;
+    padding: 22px 16px 6px; position: relative; z-index: 2;
+  }
+  nav button {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: var(--dim);
+    padding: 9px 16px;
+    border-radius: 999px;
+    font-size: 13.5px;
+    cursor: pointer;
+    transition: all .25s ease;
+    backdrop-filter: blur(8px);
+  }
+  nav button:hover { color: var(--text); border-color: rgba(124,108,255,0.5); }
+  nav button.active {
+    color: #fff;
+    background: linear-gradient(120deg, rgba(124,108,255,0.35), rgba(67,230,197,0.22));
+    border-color: rgba(124,108,255,0.7);
+    box-shadow: 0 0 24px rgba(124,108,255,0.25);
+  }
+  main { max-width: 1060px; margin: 18px auto 60px; padding: 0 16px; position: relative; }
+  .stage {
+    position: relative;
+    border-radius: 18px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    background: #04050a;
+    box-shadow: 0 20px 70px rgba(0,0,0,0.55);
+  }
+  .stage canvas { display: block; width: 100%; height: 600px; }
+  @media (max-width: 700px) { .stage canvas { height: 420px; } }
+  .hint {
+    position: absolute; left: 14px; bottom: 12px;
+    font-size: 12px; color: rgba(255,255,255,0.55);
+    background: rgba(0,0,0,0.4);
+    padding: 5px 11px; border-radius: 999px;
+    backdrop-filter: blur(6px);
+    pointer-events: none;
+  }
+  .info {
+    margin-top: 18px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 22px 26px;
+    backdrop-filter: blur(8px);
+  }
+  .info h2 { font-size: 21px; margin-bottom: 4px; }
+  .info .eq {
+    font-family: "Cambria Math", Georgia, serif;
+    font-size: 17px;
+    color: var(--accent2);
+    margin: 10px 0 12px;
+    letter-spacing: 0.3px;
+  }
+  .info p { color: var(--dim); line-height: 1.65; font-size: 14.5px; }
+  footer { text-align: center; color: #4a4f63; font-size: 12.5px; padding-bottom: 34px; }
+</style>
+</head>
+<body>
 
+<header>
+  <h1>The Mathematical Sublime</h1>
+  <p>Six of the deepest algorithms in mathematics, rendered live in your browser.</p>
+</header>
+
+<nav id="nav"></nav>
+
+<main>
+  <div class="stage">
+    <canvas id="canvas"></canvas>
+    <canvas id="glcanvas" style="display:none"></canvas>
+    <div class="hint" id="hint"></div>
+  </div>
+  <div class="info">
+    <h2 id="info-title"></h2>
+    <div class="eq" id="info-eq"></div>
+    <p id="info-body"></p>
+  </div>
+</main>
+
+<footer>Pure vanilla JavaScript · Canvas 2D + WebGL · no libraries, no dependencies</footer>
+
+<script>
+"use strict";
+const cv2d  = document.getElementById("canvas");
+const cvgl  = document.getElementById("glcanvas");
+const ctx   = cv2d.getContext("2d");
+const TAU   = Math.PI * 2;
+
+function sizeCanvas(cv) {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const r = cv.getBoundingClientRect();
+  cv.width  = Math.round(r.width  * dpr);
+  cv.height = Math.round(r.height * dpr);
+  return dpr;
+}
+
+/* ============================================================
+   1. MANDELBROT — GPU escape-time fractal with smooth coloring
+   ============================================================ */
+const Mandelbrot = (() => {
+  let gl, prog, raf, t0, uni = {};
+  const VS = `attribute vec2 p; void main(){ gl_Position = vec4(p,0.,1.); }`;
+  const FS = `
+    precision highp float;
+    uniform vec2 u_res, u_center;
+    uniform float u_scale;
+    vec3 pal(float t){
+      return 0.5 + 0.5*cos(6.28318*(vec3(0.0,0.10,0.20) + t) + vec3(0.0,0.6,1.0));
+    }
+    void main(){
+      vec2 uv = (gl_FragCoord.xy - 0.5*u_res) / u_res.y;
+      vec2 c = u_center + uv * u_scale;
+      vec2 z = vec2(0.0);
+      float n = -1.0;
+      const int MAX = 400;
+      for (int i = 0; i < MAX; i++){
+        z = vec2(z.x*z.x - z.y*z.y, 2.0*z.x*z.y) + c;
+        if (dot(z,z) > 64.0){ n = float(i); break; }
+      }
+      if (n < 0.0){ gl_FragColor = vec4(0.0,0.0,0.02,1.0); return; }
+      float sn = n + 1.0 - log2(log(dot(z,z))*0.5);  // smooth iteration count
+      vec3 col = pal(0.012*sn + 0.35) * smoothstep(0.0, 6.0, sn);
+      gl_FragColor = vec4(col, 1.0);
+    }`;
+  function init() {
+    gl = cvgl.getContext("webgl");
+    const sh = (type, src) => {
+      const s = gl.createShader(type);
+      gl.shaderSource(s, src); gl.compileShader(s);
+      return s;
+    };
+    prog = gl.createProgram();
+    gl.attachShader(prog, sh(gl.VERTEX_SHADER, VS));
+    gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, FS));
+    gl.linkProgram(prog);
+    gl.useProgram(prog);
+    const buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+    const loc = gl.getAttribLocation(prog, "p");
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+    for (const u of ["u_res","u_center","u_scale"]) uni[u] = gl.getUniformLocation(prog, u);
+  }
+  function frame(now) {
+    const t = (now - t0) / 1000;
+    // exponential ping-pong zoom into Seahorse Valley
+    const phase = (1 - Math.cos(t * TAU / 26)) * 0.5;       // 0→1→0, eased
+    const scale = 3.0 * Math.exp(-7.6 * phase);             // down to ~1.5e-3 span
+    gl.viewport(0, 0, cvgl.width, cvgl.height);
+    gl.uniform2f(uni.u_res, cvgl.width, cvgl.height);
+    gl.uniform2f(uni.u_center, -0.74543, 0.11301);
+    gl.uniform1f(uni.u_scale, scale);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    raf = requestAnimationFrame(frame);
+  }
+  return {
+    usesGL: true,
+    start() {
+      sizeCanvas(cvgl);
+      if (!gl) init();
+      t0 = performance.now();
+      raf = requestAnimationFrame(frame);
+    },
+    stop() { cancelAnimationFrame(raf); },
+    title: "The Mandelbrot Set",
+    eq: "zₙ₊₁ = zₙ² + c ,   c ∈ ℂ",
+    hint: "GPU fragment shader · auto-zooming into Seahorse Valley",
+    body: "The boundary of the Mandelbrot set is infinitely intricate: it has Hausdorff dimension 2, and zooming reveals self-similar structure at every scale forever. Each pixel iterates the map z → z² + c on the GPU and is colored by a smoothed escape time, n + 1 − log₂ log|z|, which removes the banding of the raw iteration count. The camera breathes exponentially in and out of Seahorse Valley near c ≈ −0.7454 + 0.1130i."
+  };
+})();
+
+/* ============================================================
+   2. FOURIER EPICYCLES — DFT decomposition drawing a curve
+   ============================================================ */
+const Fourier = (() => {
+  let raf, time = 0, trace = [], coeffs = [], drawing = false, drawPts = [];
+  const N = 240;
+
+  function heartPath() {
+    const pts = [];
+    for (let i = 0; i < N; i++) {
+      const t = (i / N) * TAU;
+      pts.push({
+        x: 16 * Math.pow(Math.sin(t), 3) * 11,
+        y: -(13*Math.cos(t) - 5*Math.cos(2*t) - 2*Math.cos(3*t) - Math.cos(4*t)) * 11
+      });
+    }
+    return pts;
+  }
+  function dft(pts) {
+    const out = [];
+    for (let k = 0; k < N; k++) {
+      let re = 0, im = 0;
+      for (let n = 0; n < N; n++) {
+        const phi = -TAU * k * n / N;
+        re += pts[n].x * Math.cos(phi) - pts[n].y * Math.sin(phi);
+        im += pts[n].x * Math.sin(phi) + pts[n].y * Math.cos(phi);
+      }
+      re /= N; im /= N;
+      const freq = k <= N / 2 ? k : k - N;   // signed frequency
+      out.push({ freq, amp: Math.hypot(re, im), phase: Math.atan2(im, re) });
+    }
+    out.sort((a, b) => b.amp - a.amp);
+    return out;
+  }
+  function setPath(pts) { coeffs = dft(pts); trace = []; time = 0; }
+
+  function resample(raw) {
+    // arc-length resample of a hand-drawn stroke to N points
+    let len = 0;
+    for (let i = 1; i < raw.length; i++) len += Math.hypot(raw[i].x - raw[i-1].x, raw[i].y - raw[i-1].y);
+    if (len === 0) return null;
+    const step = len / N, out = [raw[0]];
+    let acc = 0, i = 1;
+    while (out.length < N && i < raw.length) {
+      const d = Math.hypot(raw[i].x - raw[i-1].x, raw[i].y - raw[i-1].y);
+      if (acc + d >= step && d > 0) {
+        const f = (step - acc) / d;
+        const p = { x: raw[i-1].x + (raw[i].x - raw[i-1].x) * f,
+                    y: raw[i-1].y + (raw[i].y - raw[i-1].y) * f };
+        out.push(p);
+        raw.splice(i, 0, p);
+        acc = 0;
+      } else { acc += d; i++; }
+    }
+    while (out.length < N) out.push(out[out.length - 1]);
+    return out;
+  }
+
+  function frame() {
+    const w = cv2d.width, h = cv2d.height;
+    ctx.fillStyle = "rgba(4,5,10,0.34)";
+    ctx.fillRect(0, 0, w, h);
+    const cx = w / 2, cy = h / 2, S = Math.min(w, h) / 620;
+
+    let x = cx, y = cy;
+    const K = 90;
+    for (let i = 0; i < K; i++) {
+      const { freq, amp, phase } = coeffs[i];
+      const a = freq * time + phase;
+      const nx = x + amp * S * Math.cos(a);
+      const ny = y + amp * S * Math.sin(a);
+      if (amp * S > 2.5) {
+        ctx.beginPath();
+        ctx.strokeStyle = `hsla(${250 - i * 2.2}, 80%, 65%, ${Math.max(0.05, 0.34 - i * 0.003)})`;
+        ctx.arc(x, y, amp * S, 0, TAU);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.strokeStyle = "rgba(255,255,255,0.35)";
+        ctx.moveTo(x, y); ctx.lineTo(nx, ny);
+        ctx.stroke();
+      }
+      x = nx; y = ny;
+    }
+    trace.push({ x, y });
+    if (trace.length > N + 40) trace.shift();
+
+    ctx.beginPath();
+    ctx.lineWidth = 2.6 * S;
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = "#43e6c5";
+    ctx.shadowColor = "#43e6c5";
+    ctx.shadowBlur = 14;
+    for (let i = 0; i < trace.length; i++)
+      i ? ctx.lineTo(trace[i].x, trace[i].y) : ctx.moveTo(trace[i].x, trace[i].y);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.lineWidth = 1;
+
+    time += TAU / N * 0.6;
+    raf = requestAnimationFrame(frame);
+  }
+
+  function down(e) {
+    drawing = true; drawPts = [];
+    move(e);
+  }
+  function move(e) {
+    if (!drawing) return;
+    const r = cv2d.getBoundingClientRect();
+    const dpr = cv2d.width / r.width;
+    const S = Math.min(cv2d.width, cv2d.height) / 620;
+    drawPts.push({
+      x: ((e.clientX - r.left) * dpr - cv2d.width / 2) / S,
+      y: ((e.clientY - r.top)  * dpr - cv2d.height / 2) / S
+    });
+  }
+  function up() {
+    if (drawing && drawPts.length > 12) {
+      const pts = resample(drawPts);
+      if (pts) setPath(pts);
+    }
+    drawing = false;
+  }
+
+  return {
+    start() {
+      sizeCanvas(cv2d);
+      ctx.fillStyle = "#04050a"; ctx.fillRect(0, 0, cv2d.width, cv2d.height);
+      setPath(heartPath());
+      cv2d.addEventListener("pointerdown", down);
+      cv2d.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", up);
+      raf = requestAnimationFrame(frame);
+    },
+    stop() {
+      cancelAnimationFrame(raf);
+      cv2d.removeEventListener("pointerdown", down);
+      cv2d.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    },
+    title: "Fourier Epicycles — the Discrete Fourier Transform",
+    eq: "Xₖ = (1/N) Σₙ xₙ · e^(−2πi kn/N)",
+    hint: "draw any shape with your mouse — it will be rebuilt from pure circles",
+    body: "Joseph Fourier's astonishing claim — that any signal is a sum of pure rotations — is animated literally here. The closed curve is treated as a complex-valued signal, decomposed by the Discrete Fourier Transform into rotating phasors, and then re-drawn by a chain of circles, each spinning at an integer frequency with the amplitude and phase the DFT prescribes. The fast version of this algorithm (the FFT, Cooley–Tukey 1965) is routinely called the most important numerical algorithm of the 20th century. Draw your own shape on the canvas and watch the circles learn it."
+  };
+})();
+
+/* ============================================================
+   3. LORENZ ATTRACTOR — RK4 integration of a chaotic flow
+   ============================================================ */
+const Lorenz = (() => {
+  let raf, particles, rot = 0;
+  const SIGMA = 10, RHO = 28, BETA = 8 / 3, DT = 0.004;
+  const TRAIL = 900;
+
+  function deriv(p) {
+    return [SIGMA * (p[1] - p[0]), p[0] * (RHO - p[2]) - p[1], p[0] * p[1] - BETA * p[2]];
+  }
+  function rk4(p) {
+    const k1 = deriv(p);
+    const k2 = deriv([p[0]+k1[0]*DT/2, p[1]+k1[1]*DT/2, p[2]+k1[2]*DT/2]);
+    const k3 = deriv([p[0]+k2[0]*DT/2, p[1]+k2[1]*DT/2, p[2]+k2[2]*DT/2]);
+    const k4 = deriv([p[0]+k3[0]*DT,   p[1]+k3[1]*DT,   p[2]+k3[2]*DT]);
+    return [
+      p[0] + (k1[0] + 2*k2[0] + 2*k3[0] + k4[0]) * DT / 6,
+      p[1] + (k1[1] + 2*k2[1] + 2*k3[1] + k4[1]) * DT / 6,
+      p[2] + (k1[2] + 2*k2[2] + 2*k3[2] + k4[2]) * DT / 6
+    ];
+  }
+  function frame() {
+    const w = cv2d.width, h = cv2d.height;
+    ctx.fillStyle = "rgba(4,5,10,0.3)";
+    ctx.fillRect(0, 0, w, h);
+    ctx.globalCompositeOperation = "lighter";
+
+    rot += 0.0035;
+    const cosR = Math.cos(rot), sinR = Math.sin(rot);
+    const S = Math.min(w, h) / 105;
+
+    for (const pt of particles) {
+      for (let s = 0; s < 4; s++) {
+        pt.p = rk4(pt.p);
+        pt.trail.push(pt.p);
+      }
+      while (pt.trail.length > TRAIL) pt.trail.shift();
+
+      ctx.beginPath();
+      let started = false;
+      for (let i = 0; i < pt.trail.length; i += 2) {
+        const [x, y, z] = pt.trail[i];
+        const rx = x * cosR - y * sinR;
+        const ry = x * sinR + y * cosR;
+        const depth = Math.max(0.4, 1 + ry / 120);    // mild perspective
+        const px = w / 2 + rx * S / depth;
+        const py = h / 2 - (z - 27) * S / depth;
+        started ? ctx.lineTo(px, py) : (ctx.moveTo(px, py), started = true);
+      }
+      ctx.strokeStyle = `hsla(${pt.hue}, 90%, 62%, 0.5)`;
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
+    }
+    ctx.globalCompositeOperation = "source-over";
+    raf = requestAnimationFrame(frame);
+  }
+  return {
+    start() {
+      sizeCanvas(cv2d);
+      ctx.fillStyle = "#04050a"; ctx.fillRect(0, 0, cv2d.width, cv2d.height);
+      particles = [];
+      for (let i = 0; i < 7; i++) {
+        particles.push({
+          p: [1 + i * 1e-4, 1, 20],          // nearly identical starts → divergence
+          trail: [],
+          hue: 180 + i * 26
+        });
+      }
+      raf = requestAnimationFrame(frame);
+    },
+    stop() { cancelAnimationFrame(raf); },
+    title: "The Lorenz Attractor — Deterministic Chaos",
+    eq: "ẋ = σ(y−x) ,  ẏ = x(ρ−z)−y ,  ż = xy − βz",
+    hint: "7 trajectories starting 0.0001 apart · 4th-order Runge–Kutta · rotating view",
+    body: "Edward Lorenz found this system in 1963 while modeling atmospheric convection, and with it the butterfly effect: seven particles here begin within 0.0001 of each other and are integrated with the classical 4th-order Runge–Kutta method, yet within seconds their futures are completely uncorrelated. They never settle and never repeat, forever tracing a strange attractor of fractal dimension ≈ 2.06. Proving this attractor rigorously exists took until 2002 (Warwick Tucker, via computer-assisted proof) — it was Smale's 14th problem."
+  };
+})();
+
+/* ============================================================
+   4. GRAY–SCOTT REACTION-DIFFUSION — emergent pattern formation
+   ============================================================ */
+const ReactDiff = (() => {
+  let raf, W, H, A, B, A2, B2, img, off, offCtx;
+  const Da = 1.0, Db = 0.5, F = 0.0367, K = 0.0649;   // "mitosis" regime
+
+  function seed(cx, cy, r) {
+    for (let y = -r; y <= r; y++) for (let x = -r; x <= r; x++) {
+      if (x*x + y*y > r*r) continue;
+      const ix = ((cx + x + W) % W) + ((cy + y + H) % H) * W;
+      B[ix] = 1; A[ix] = 0;
+    }
+  }
+  function step() {
+    for (let y = 0; y < H; y++) {
+      const ym = ((y - 1 + H) % H) * W, yp = ((y + 1) % H) * W, y0 = y * W;
+      for (let x = 0; x < W; x++) {
+        const xm = (x - 1 + W) % W, xp = (x + 1) % W;
+        const i = y0 + x;
+        const a = A[i], b = B[i];
+        const lapA = -a + 0.2 * (A[y0+xm] + A[y0+xp] + A[ym+x] + A[yp+x])
+                        + 0.05 * (A[ym+xm] + A[ym+xp] + A[yp+xm] + A[yp+xp]);
+        const lapB = -b + 0.2 * (B[y0+xm] + B[y0+xp] + B[ym+x] + B[yp+x])
+                        + 0.05 * (B[ym+xm] + B[ym+xp] + B[yp+xm] + B[yp+xp]);
+        const abb = a * b * b;
+        A2[i] = a + Da * lapA - abb + F * (1 - a);
+        B2[i] = b + Db * lapB + abb - (K + F) * b;
+      }
+    }
+    [A, A2] = [A2, A]; [B, B2] = [B2, B];
+  }
+  function frame() {
+    for (let s = 0; s < 10; s++) step();
+    const d = img.data;
+    for (let i = 0; i < W * H; i++) {
+      const t = 1 - Math.max(0, Math.min(1, A[i] - B[i]));   // t≈0 background, t≈1 organism
+      d[i*4]   = 8   + 190 * t * t;
+      d[i*4+1] = 10  + 110 * t;
+      d[i*4+2] = 26  + 229 * Math.sqrt(t);
+      d[i*4+3] = 255;
+    }
+    offCtx.putImageData(img, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(off, 0, 0, cv2d.width, cv2d.height);
+    raf = requestAnimationFrame(frame);
+  }
+  function click(e) {
+    const r = cv2d.getBoundingClientRect();
+    const x = Math.floor((e.clientX - r.left) / r.width * W);
+    const y = Math.floor((e.clientY - r.top) / r.height * H);
+    seed(x, y, 4);
+  }
+  return {
+    start() {
+      sizeCanvas(cv2d);
+      W = 240; H = Math.max(60, Math.round(240 * cv2d.height / cv2d.width));
+      A = new Float32Array(W * H).fill(1);
+      B = new Float32Array(W * H);
+      A2 = new Float32Array(W * H);
+      B2 = new Float32Array(W * H);
+      off = document.createElement("canvas");
+      off.width = W; off.height = H;
+      offCtx = off.getContext("2d");
+      img = offCtx.createImageData(W, H);
+      for (let i = 0; i < 6; i++)
+        seed(Math.floor(Math.random() * W), Math.floor(Math.random() * H), 4);
+      cv2d.addEventListener("pointerdown", click);
+      raf = requestAnimationFrame(frame);
+    },
+    stop() {
+      cancelAnimationFrame(raf);
+      cv2d.removeEventListener("pointerdown", click);
+    },
+    title: "Gray–Scott Reaction-Diffusion — Turing's Morphogenesis",
+    eq: "∂A/∂t = Dₐ∇²A − AB² + F(1−A) ,   ∂B/∂t = Dᵦ∇²B + AB² − (k+F)B",
+    hint: "click anywhere to inject chemical B and grow new cells",
+    body: "In 1952 Alan Turing proposed that two chemicals — one feeding, one killing — diffusing at different speeds could explain how leopards get spots and fingers know where to grow. This is the Gray–Scott model of that idea: two coupled nonlinear partial differential equations solved on a grid of ~80,000 cells, ten timesteps per frame. With feed rate F = 0.0367 and kill rate k = 0.0649 the system sits in the 'mitosis' regime, where blobs grow, pinch, and divide like living cells. Nothing in the equations mentions cells — the biology is emergent."
+  };
+})();
+
+/* ============================================================
+   5. DOUBLE PENDULUM — Lagrangian chaos, RK4
+   ============================================================ */
+const Pendulum = (() => {
+  let raf, pends;
+  const G = 9.81, L1 = 1, L2 = 1, M1 = 1, M2 = 1, DT = 0.012;
+
+  function deriv(s) {
+    const [t1, t2, w1, w2] = s;
+    const d = t1 - t2;
+    const cd = Math.cos(d), sd = Math.sin(d);
+    const den = 2 * M1 + M2 - M2 * Math.cos(2 * d);
+    const a1 = (-G * (2*M1 + M2) * Math.sin(t1)
+                - M2 * G * Math.sin(t1 - 2*t2)
+                - 2 * sd * M2 * (w2*w2*L2 + w1*w1*L1*cd)) / (L1 * den);
+    const a2 = (2 * sd * (w1*w1*L1*(M1+M2) + G*(M1+M2)*Math.cos(t1) + w2*w2*L2*M2*cd)) / (L2 * den);
+    return [w1, w2, a1, a2];
+  }
+  function rk4(s) {
+    const add = (a, b, f) => a.map((v, i) => v + b[i] * f);
+    const k1 = deriv(s);
+    const k2 = deriv(add(s, k1, DT/2));
+    const k3 = deriv(add(s, k2, DT/2));
+    const k4 = deriv(add(s, k3, DT));
+    return s.map((v, i) => v + (k1[i] + 2*k2[i] + 2*k3[i] + k4[i]) * DT / 6);
+  }
+  function frame() {
+    const w = cv2d.width, h = cv2d.height;
+    ctx.fillStyle = "rgba(4,5,10,0.12)";
+    ctx.fillRect(0, 0, w, h);
+    const cx = w / 2, cy = h * 0.36, S = Math.min(w, h) / 5;
+
+    ctx.globalCompositeOperation = "lighter";
+    for (const p of pends) {
+      for (let i = 0; i < 3; i++) p.s = rk4(p.s);
+      const x1 = cx + S * Math.sin(p.s[0]), y1 = cy + S * Math.cos(p.s[0]);
+      const x2 = x1 + S * Math.sin(p.s[1]), y2 = y1 + S * Math.cos(p.s[1]);
+
+      if (p.last) {
+        ctx.beginPath();
+        ctx.strokeStyle = `hsla(${p.hue}, 95%, 60%, 0.8)`;
+        ctx.lineWidth = 2;
+        ctx.moveTo(p.last[0], p.last[1]);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+      }
+      p.last = [x2, y2];
+
+      ctx.strokeStyle = `hsla(${p.hue}, 60%, 70%, 0.10)`;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy); ctx.lineTo(x1, y1); ctx.lineTo(x2, y2);
+      ctx.stroke();
+    }
+    ctx.globalCompositeOperation = "source-over";
+    ctx.fillStyle = "#fff";
+    ctx.beginPath(); ctx.arc(cx, cy, 3, 0, TAU); ctx.fill();
+    raf = requestAnimationFrame(frame);
+  }
+  return {
+    start() {
+      sizeCanvas(cv2d);
+      ctx.fillStyle = "#04050a"; ctx.fillRect(0, 0, cv2d.width, cv2d.height);
+      pends = [];
+      const COUNT = 18;
+      for (let i = 0; i < COUNT; i++) {
+        pends.push({
+          s: [Math.PI / 2 + i * 1e-5, Math.PI, 0, 0],   // 10 microradian offsets
+          hue: 160 + (i / COUNT) * 180,
+          last: null
+        });
+      }
+      raf = requestAnimationFrame(frame);
+    },
+    stop() { cancelAnimationFrame(raf); },
+    title: "Double Pendulum Swarm — Sensitive Dependence",
+    eq: "L = T − V ,   d/dt(∂L/∂θ̇) − ∂L/∂θ = 0",
+    hint: "18 pendulums released 0.00001 radians apart — watch them disagree",
+    body: "Two rods, two masses, gravity — and the simplest mechanical system with no closed-form solution. The equations of motion fall out of the Euler–Lagrange equations of classical mechanics and are integrated here with RK4. Eighteen pendulums are released with initial angles differing by ten microradians, far below any measurable precision; for a while they move as one bright line, then the positive Lyapunov exponent does its work and they fan into rainbow chaos. This is why weather forecasts have a horizon: some systems amplify ignorance exponentially."
+  };
+})();
+
+/* ============================================================
+   6. RIEMANN ZETA — partial sums on the critical line
+   ============================================================ */
+const Zeta = (() => {
+  let raf, t = 1.0, locus = [];
+  const TERMS = 600;
+
+  function frame() {
+    const w = cv2d.width, h = cv2d.height;
+    ctx.fillStyle = "#04050a";
+    ctx.fillRect(0, 0, w, h);
+    const S = Math.min(w, h) / 9;
+    const cx = w * 0.5, cy = h * 0.52;
+
+    // Dirichlet eta series: η(s) = Σ (−1)ⁿ⁻¹ n^(−s), converges for Re(s) > 0.
+    // Plotted points are averages of consecutive partial sums (smooths the
+    // alternating zigzag and accelerates convergence); endpoint → η(1/2+it),
+    // which vanishes exactly at the nontrivial zeros of ζ.
+    let re = 0, im = 0, pre = 0, pim = 0;
+    const pts = [];
+    for (let n = 1; n <= TERMS; n++) {
+      const sign = (n % 2 === 1) ? 1 : -1;
+      const mag = sign / Math.sqrt(n);
+      const ang = -t * Math.log(n);
+      pre = re; pim = im;
+      re += mag * Math.cos(ang);
+      im += mag * Math.sin(ang);
+      pts.push([cx + (re + pre) / 2 * S, cy - (im + pim) / 2 * S]);
+    }
+    const er = (re + pre) / 2, ei = (im + pim) / 2;   // η(1/2 + it)
+    // ζ = η / (1 − 2^(1−s))
+    const ka = -t * Math.LN2;
+    const dr = 1 - Math.SQRT2 * Math.cos(ka), di = -Math.SQRT2 * Math.sin(ka);
+    const dd = dr * dr + di * di;
+    const zr = (er * dr + ei * di) / dd, zi = (ei * dr - er * di) / dd;
+    for (let i = 0; i < pts.length; i++) {
+      ctx.strokeStyle = `hsla(${200 + i * 0.45}, 85%, ${Math.max(30, 65 - i * 0.04)}%, ${Math.max(0.25, 0.9 - i * 0.001)})`;
+      ctx.beginPath();
+      i ? ctx.moveTo(pts[i-1][0], pts[i-1][1]) : ctx.moveTo(cx, cy);
+      ctx.lineTo(pts[i][0], pts[i][1]);
+      ctx.lineWidth = 1.3;
+      ctx.stroke();
+    }
+
+    // locus of the series endpoint as t grows — passes through 0 at every zero
+    locus.push([er, ei]);
+    if (locus.length > 2600) locus.shift();
+    ctx.beginPath();
+    for (let i = 0; i < locus.length; i++) {
+      const px = cx + locus[i][0] * S, py = cy - locus[i][1] * S;
+      i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+    }
+    ctx.strokeStyle = "rgba(67,230,197,0.22)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // endpoint glow
+    const ex = cx + er * S, ey = cy - ei * S;
+    const zmag = Math.hypot(zr, zi);
+    const near = Math.max(0, 1 - zmag / 0.45);
+    ctx.beginPath();
+    ctx.fillStyle = near > 0.4 ? "#ffd66e" : "#43e6c5";
+    ctx.shadowColor = ctx.fillStyle;
+    ctx.shadowBlur = 18 + near * 30;
+    ctx.arc(ex, ey, 4 + near * 5, 0, TAU);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
+    // origin crosshair + readout
+    ctx.strokeStyle = "rgba(255,255,255,0.18)";
+    ctx.beginPath();
+    ctx.moveTo(cx - 10, cy); ctx.lineTo(cx + 10, cy);
+    ctx.moveTo(cx, cy - 10); ctx.lineTo(cx, cy + 10);
+    ctx.stroke();
+    ctx.fillStyle = "rgba(255,255,255,0.75)";
+    const fpx = Math.round(14 * cv2d.width / cv2d.getBoundingClientRect().width);
+    ctx.font = `${fpx}px monospace`;
+    ctx.fillText(`s = 1/2 + ${t.toFixed(3)} i      |ζ(s)| ≈ ${zmag.toFixed(3)}`, 18, 30 + fpx);
+    if (near > 0.55) {
+      ctx.fillStyle = "#ffd66e";
+      ctx.fillText("← near a nontrivial zero", 18, 34 + 2.4 * fpx);
+    }
+
+    t += 0.006;
+    if (t > 120) { t = 1; locus = []; }
+    raf = requestAnimationFrame(frame);
+  }
+  return {
+    start() {
+      sizeCanvas(cv2d);
+      t = 1.0; locus = [];
+      raf = requestAnimationFrame(frame);
+    },
+    stop() { cancelAnimationFrame(raf); },
+    title: "The Riemann Zeta Function on the Critical Line",
+    eq: "ζ(s) = η(s)/(1−2¹⁻ˢ) ,   η(s) = Σ (−1)ⁿ⁻¹ n⁻ˢ ,   s = 1/2 + it",
+    hint: "the spiral is 600 terms of the eta series · gold flash = a nontrivial zero of ζ",
+    body: "The rainbow spiral is the running partial sum of the Dirichlet eta series at s = 1/2 + it: each segment is a vector of length 1/√n rotated by −t·ln n, with alternating signs (the trick that makes the series converge on the critical line, where the raw zeta series does not). As t climbs the critical line, the endpoint (bright dot) wanders the complex plane, and every time it returns to the origin, ζ has a nontrivial zero — the first lands at t ≈ 14.1347, and a parade of 37 more follows before the loop resets at t = 120. The Riemann Hypothesis, unsolved since 1859 and worth a million dollars, asserts that every such zero lies exactly on this line. The zeros encode the distribution of the prime numbers — this animation is, in a precise sense, the music of the primes."
+  };
+})();
+
+/* ============================================================
+   App shell — tabs, lifecycle
+   ============================================================ */
+const VIZ = [
+  { id: "mandelbrot", label: "Mandelbrot Set",      mod: Mandelbrot },
+  { id: "fourier",    label: "Fourier Epicycles",   mod: Fourier },
+  { id: "lorenz",     label: "Lorenz Attractor",    mod: Lorenz },
+  { id: "rd",         label: "Reaction-Diffusion",  mod: ReactDiff },
+  { id: "pendulum",   label: "Double Pendulum",     mod: Pendulum },
+  { id: "zeta",       label: "Riemann Zeta",        mod: Zeta }
+];
+let current = null;
+
+const nav = document.getElementById("nav");
+for (const v of VIZ) {
+  const b = document.createElement("button");
+  b.textContent = v.label;
+  b.onclick = () => activate(v, b);
+  v.btn = b;
+  nav.appendChild(b);
+}
+
+function activate(v, btn) {
+  if (current) current.mod.stop();
+  document.querySelectorAll("nav button").forEach(b => b.classList.remove("active"));
+  btn.classList.add("active");
+  cv2d.style.display = v.mod.usesGL ? "none" : "block";
+  cvgl.style.display = v.mod.usesGL ? "block" : "none";
+  document.getElementById("info-title").textContent = v.mod.title;
+  document.getElementById("info-eq").textContent = v.mod.eq;
+  document.getElementById("info-body").textContent = v.mod.body;
+  document.getElementById("hint").textContent = v.mod.hint;
+  current = v;
+  v.mod.start();
+}
+
+let resizeTimer;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    if (current) { current.mod.stop(); current.mod.start(); }
+  }, 200);
+});
+
+activate(VIZ[0], VIZ[0].btn);
+</script>
+</body>
+</html>
